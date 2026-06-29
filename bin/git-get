@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: git get <url>
+
+Supported URL formats:
+  git@github.com:user/repo[.git]
+  https://github.com/user/repo[.git]
+  github.com/user/repo
+  user/repo                         (defaults to github.com)
+EOF
+  exit 1
+}
+
+if [[ $# -lt 1 ]]; then
+  usage
+fi
+
+original_url="$1"
+url="${original_url%.git}"
+
+# Parse host/owner/repo from URL
+if [[ "$url" =~ ^git@([^:]+):([^/]+)/(.+)$ ]]; then
+  host="${BASH_REMATCH[1]}"
+  owner="${BASH_REMATCH[2]}"
+  repo="${BASH_REMATCH[3]}"
+elif [[ "$url" =~ ^https?://([^/]+)/([^/]+)/(.+)$ ]]; then
+  host="${BASH_REMATCH[1]}"
+  owner="${BASH_REMATCH[2]}"
+  repo="${BASH_REMATCH[3]}"
+elif [[ "$url" =~ ^([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/([^/]+)/(.+)$ ]]; then
+  host="${BASH_REMATCH[1]}"
+  owner="${BASH_REMATCH[2]}"
+  repo="${BASH_REMATCH[3]}"
+elif [[ "$url" =~ ^([^/]+)/([^/]+)$ ]]; then
+  host="github.com"
+  owner="${BASH_REMATCH[1]}"
+  repo="${BASH_REMATCH[2]}"
+else
+  echo "git-get: cannot parse URL: ${original_url}" >&2
+  usage
+fi
+
+# Build the clone URL
+if [[ "$original_url" =~ ^(git@|https?://) ]]; then
+  clone_url="${url}.git"
+else
+  clone_url="https://${host}/${owner}/${repo}.git"
+fi
+
+# Resolve ghq root
+if ! ghq_root=$(ghq root 2>/dev/null) || [[ -z "$ghq_root" ]]; then
+  echo "git-get: ghq root not found — install ghq and set GHQROOT" >&2
+  exit 1
+fi
+
+dest="${ghq_root}/${host}/${owner}/${repo}"
+
+if [[ -d "$dest" ]]; then
+  echo "git-get: already exists: ${dest}" >&2
+  exit 1
+fi
+
+echo "git-get: cloning ${host}/${owner}/${repo}"
+echo "  url  -> ${clone_url}"
+echo "  dest -> ${dest}"
+
+mkdir -p "$dest"
+
+# Morgan-style bare clone:
+#   1. clone --bare into .bare/
+#   2. create .git pointer
+#   3. fix fetch refspec so remote-tracking refs populate correctly
+#   4. fetch
+git clone --bare "$clone_url" "$dest/.bare"
+echo "gitdir: ./.bare" > "$dest/.git"
+git -C "$dest/.bare" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+git -C "$dest/.bare" fetch origin
+
+echo "git-get: done -> ${dest}"
